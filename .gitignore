@@ -3,6 +3,9 @@
 *.mod
 *.smod
 multipole_sim
+test_accuracy
+test_performance
+test_fmm_precision
 
 # Output directories
 output/
