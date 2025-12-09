@@ -1,220 +1,155 @@
-program main
+program multipole_simulation
   !============================================================================
   ! Multipole simulation for 1/r potential in z=0 plane
-  ! Simplified and optimized version
+  ! Using uniform grid FMM with complex moments
   !============================================================================
-  use multipole_module
+  use multipole_accurate
   implicit none
 
+  integer, parameter :: dp = selected_real_kind(15, 307)
+
+  ! System parameters
   type(multipole_system) :: sys
-  integer :: i, frame
-  real(8) :: t_start, t_end, time_direct, time_multipole
-  real(8) :: energy_direct, energy_multipole, rel_error
-  real(8) :: force_direct(2), force_multipole(2), force_error
+  real(dp) :: box_size
+  integer :: n_cells, p_order
+  integer :: n_particles, max_particles
 
-  !============================================================================
-  ! SIMULATION PARAMETERS - All controlled from here
-  !============================================================================
+  ! Simulation parameters
+  integer :: n_steps, write_interval
+  real(dp) :: dt, eta
 
-  ! Domain size
-  real(8), parameter :: XMAX = 1.0d0
-  real(8), parameter :: YMAX = 1.0d0
+  ! Energy and diagnostics
+  real(dp) :: energy_direct, energy_fmm, rel_error
+
+  ! Loop variables
+  integer :: i, step
+  character(len=100) :: filename
+  real(dp) :: x, y, charge
+  real(dp) :: start_time, end_time
+
+  !----------------------------------------------------------------------------
+  ! Configuration
+  !----------------------------------------------------------------------------
+
+  ! Domain: [-box_size, box_size] x [-box_size, box_size]
+  box_size = 10.0_dp
 
   ! Grid parameters
-  integer, parameter :: NX_CELLS = 10
-  integer, parameter :: NY_CELLS = 10
+  n_cells = 5               ! 5x5 uniform grid
+  p_order = 12              ! Multipole expansion order (higher = more accurate)
 
-  ! Multipole expansion order (adjust for accuracy/speed tradeoff)
-  ! p=5:  fast, ~10^-3 accuracy
-  ! p=10: balanced, ~10^-5 accuracy
-  ! p=20: accurate, ~10^-8 accuracy
-  integer, parameter :: P_MAX = 10
+  ! Particles
+  n_particles = 100
+  max_particles = 1000
 
-  ! Number of particles
-  integer, parameter :: N_PARTICLES = 10000
+  ! Time integration
+  n_steps = 100
+  dt = 0.01_dp
+  eta = 0.1_dp              ! Mobility coefficient
+  write_interval = 10
 
-  ! Dynamics parameters
-  real(8), parameter :: ETA = 1.0d0        ! Mobility
-  real(8), parameter :: DT = 0.001d0       ! Time step
-  integer, parameter :: NSTEPS = 100       ! Number of steps
-
-  ! Simulation control
-  logical, parameter :: TEST_ACCURACY = .true.   ! Run accuracy test
-  logical, parameter :: RUN_DYNAMICS = .true.    ! Run dynamics
-  integer, parameter :: FRAME_SKIP = 5           ! Write every N frames
-
-  ! Output directory - will be created based on parameters
-  character(len=256) :: output_dir
-
-  !============================================================================
-  ! INITIALIZATION
-  !============================================================================
-
-  print *, "======================================================================"
-  print *, "Multipole Simulation: 1/r Potential (z=0 plane)"
-  print *, "======================================================================"
-  print *, ""
-  print *, "Parameters:"
-  print *, "  Domain:     [", -XMAX, ",", XMAX, "] x [", -YMAX, ",", YMAX, "]"
-  print *, "  Grid:       ", NX_CELLS, "x", NY_CELLS
-  print *, "  p_max:      ", P_MAX
-  print *, "  Particles:  ", N_PARTICLES
-  print *, "  Timestep:   ", DT
-  print *, "  Steps:      ", NSTEPS
-  print *, ""
-
+  !----------------------------------------------------------------------------
   ! Initialize system
-  call init_system(sys, XMAX, YMAX, NX_CELLS, NY_CELLS, P_MAX, N_PARTICLES*2)
+  !----------------------------------------------------------------------------
 
-  !============================================================================
-  ! GENERATE PARTICLES
-  !============================================================================
+  print *, '============================================'
+  print *, 'Multipole Simulation (Uniform Grid FMM)'
+  print *, '============================================'
+  print *, 'Box size:        ', box_size
+  print *, 'Grid:            ', n_cells, 'x', n_cells
+  print *, 'Multipole order: ', p_order
+  print *, 'Particles:       ', n_particles
+  print *, 'Time steps:      ', n_steps
+  print *, '============================================'
+  print *
 
-  print *, "Generating particles..."
-  call generate_random_particles(sys, N_PARTICLES)
-  print *, "  Total particles: ", sys%n_particles
-  print *, ""
+  call init_system(sys, box_size, box_size, n_cells, n_cells, p_order, max_particles)
 
-  !============================================================================
-  ! ACCURACY TEST
-  !============================================================================
+  ! Add particles with random positions and charges
+  call random_seed()
+  do i = 1, n_particles
+    call random_number(x)
+    call random_number(y)
+    call random_number(charge)
 
-  if (TEST_ACCURACY) then
-    print *, "======================================================================"
-    print *, "ACCURACY TEST"
-    print *, "======================================================================"
+    x = (x - 0.5_dp) * 2.0_dp * box_size * 0.9_dp  ! [-0.9*box_size, 0.9*box_size]
+    y = (y - 0.5_dp) * 2.0_dp * box_size * 0.9_dp
+    charge = (charge - 0.5_dp) * 2.0_dp            ! [-1, 1]
 
-    ! Energy test
-    if (sys%n_particles <= 5000) then
-      print *, ""
-      print *, "Energy comparison:"
-      call cpu_time(t_start)
-      energy_direct = compute_energy(sys, .false.)
-      call cpu_time(t_end)
-      time_direct = t_end - t_start
-      print *, "  Direct:    ", energy_direct, " (", time_direct*1000, " ms)"
+    call add_particle(sys, x, y, charge)
+  end do
 
-      call cpu_time(t_start)
-      energy_multipole = compute_energy(sys, .true.)
-      call cpu_time(t_end)
-      time_multipole = t_end - t_start
-      print *, "  Multipole: ", energy_multipole, " (", time_multipole*1000, " ms)"
+  print *, 'Added', sys%n_particles, 'particles'
+  print *
 
-      if (abs(energy_direct) > 1.0d-10) then
-        rel_error = abs(energy_direct - energy_multipole) / abs(energy_direct)
-        print *, "  Relative error: ", rel_error
-        print *, "  Speedup:        ", time_direct / time_multipole, "x"
-      end if
-    else
-      print *, "Skipping energy test (N too large for direct O(N^2) calculation)"
+  !----------------------------------------------------------------------------
+  ! Initial energy check
+  !----------------------------------------------------------------------------
+
+  print *, 'Computing initial forces and energy...'
+  call cpu_time(start_time)
+  call compute_all_forces(sys)
+  call cpu_time(end_time)
+
+  energy_fmm = compute_energy_multipole(sys)
+  energy_direct = compute_energy_direct(sys)
+  rel_error = abs(energy_fmm - energy_direct) / abs(energy_direct)
+
+  print *, 'FMM computation time:    ', end_time - start_time, 's'
+  print *, 'Energy (direct):         ', energy_direct
+  print *, 'Energy (FMM):            ', energy_fmm
+  print *, 'Relative error:          ', rel_error
+  print *
+
+  !----------------------------------------------------------------------------
+  ! Time integration loop
+  !----------------------------------------------------------------------------
+
+  print *, 'Starting time integration...'
+  print *
+
+  do step = 1, n_steps
+
+    ! Compute forces
+    call compute_all_forces(sys)
+
+    ! Move particles
+    call move_particles(sys, dt, eta)
+
+    ! Write output
+    if (mod(step, write_interval) == 0) then
+      write(filename, '(A,I6.6,A)') 'particles_', step, '.csv'
+      call write_frame(sys, filename)
+
+      energy_fmm = compute_energy_multipole(sys)
+
+      print '(A,I6,A,E14.6)', 'Step ', step, '  Energy: ', energy_fmm
     end if
 
-    ! Force test (sample 5 particles)
-    print *, ""
-    print *, "Force comparison (first 5 particles):"
-    print *, "  ID  |    Direct Force    |  Multipole Force   | Rel. Error"
-    print *, "  ---------------------------------------------------------------"
-    do i = 1, min(5, sys%n_particles)
-      call compute_force(sys, i, force_direct(1), force_direct(2), .false.)
-      call compute_force(sys, i, force_multipole(1), force_multipole(2), .true.)
+  end do
 
-      force_error = sqrt((force_direct(1) - force_multipole(1))**2 + &
-                        (force_direct(2) - force_multipole(2))**2) / &
-                   max(sqrt(force_direct(1)**2 + force_direct(2)**2), 1.0d-10)
+  print *
+  print *, '============================================'
+  print *, 'Simulation complete!'
+  print *, '============================================'
+  print *
 
-      write(*, '(I5,A,2E11.3,A,2E11.3,A,E10.2)') &
-        i, '  | ', force_direct, '  | ', force_multipole, '  | ', force_error
-    end do
-    print *, ""
-  end if
+  ! Final diagnostics
+  print *, 'Computing final accuracy...'
+  call compute_all_forces(sys)
 
-  !============================================================================
-  ! DYNAMICS SIMULATION
-  !============================================================================
+  energy_fmm = compute_energy_multipole(sys)
+  energy_direct = compute_energy_direct(sys)
+  rel_error = abs(energy_fmm - energy_direct) / abs(energy_direct)
 
-  if (RUN_DYNAMICS) then
-    print *, "======================================================================"
-    print *, "DYNAMICS SIMULATION"
-    print *, "======================================================================"
-    print *, ""
+  print *, 'Final energy (direct):   ', energy_direct
+  print *, 'Final energy (FMM):      ', energy_fmm
+  print *, 'Relative error:          ', rel_error
+  print *
 
-    ! Create output directory with informative name
-    write(output_dir, '(A,I0,A,I0,A,I0,A,I0)') &
-      'output_N', N_PARTICLES, '_grid', NX_CELLS, '_p', P_MAX, '_steps', NSTEPS
-
-    ! Create directory (Fortran-compatible way)
-    call execute_command_line('mkdir ' // trim(output_dir), wait=.true.)
-    print *, "Output directory: ", trim(output_dir)
-    print *, ""
-
-    ! Initial frame
-    call write_frame(sys, 0, output_dir)
-
-    print *, "Running simulation..."
-    do frame = 1, NSTEPS
-      ! Compute forces
-      call compute_all_forces(sys, .true.)
-
-      ! Update positions
-      call move_particles(sys, ETA, DT)
-
-      ! Update cell assignments
-      call update_cells(sys)
-
-      ! Write output
-      if (mod(frame, FRAME_SKIP) == 0) then
-        call write_frame(sys, frame, OUTPUT_DIR)
-        write(*, '(A,I6,A,I6,A,F8.3,A)') &
-          '  Frame ', frame, ' / ', NSTEPS, ' (', &
-          100.0d0*real(frame)/real(NSTEPS), '%)'
-      end if
-    end do
-
-    print *, ""
-    print *, "Simulation complete!"
-    print *, "Output written to: ", trim(output_dir)
-    print *, ""
-    print *, "Visualize with: python3 visualize.py --dir ", trim(output_dir)
-  end if
-
-  !============================================================================
-  ! CLEANUP
-  !============================================================================
-
+  ! Cleanup
   call destroy_system(sys)
 
-  print *, ""
-  print *, "======================================================================"
-  print *, "Done!"
-  print *, "======================================================================"
+  print *, 'Done!'
 
-contains
-
-  !============================================================================
-  ! Generate random particles
-  !============================================================================
-  subroutine generate_random_particles(sys, n)
-    type(multipole_system), intent(inout) :: sys
-    integer, intent(in) :: n
-    integer :: i
-    real(8) :: x, y, q
-
-    call random_seed()
-
-    do i = 1, n
-      call random_number(x)
-      call random_number(y)
-      call random_number(q)
-
-      ! Position: uniform in domain
-      x = (x - 0.5d0) * 1.8d0 * XMAX
-      y = (y - 0.5d0) * 1.8d0 * YMAX
-
-      ! Charge: all positive (superconductor vortices)
-      q = 1.0d0
-
-      call add_particle(sys, q, x, y)
-    end do
-  end subroutine generate_random_particles
-
-end program main
+end program multipole_simulation

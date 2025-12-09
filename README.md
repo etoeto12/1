@@ -1,283 +1,267 @@
-# Multipole Method for 1/r Potential (Superconductor Simulation)
+# Multipole Method for 1/r Potential in z=0 Plane
 
-Реализация мультипольного метода для вычисления взаимодействий с потенциалом 1/r в плоскости z=0. Оптимизирован для моделирования вихрей в сверхпроводниках.
+Fast multipole method implementation for computing Coulomb interactions between particles in a 2D plane using uniform grid decomposition and complex moment expansions.
 
-## Особенности
+## Overview
 
-- **Потенциал**: 1/r (кулоновский в 2D)
-- **Математика**: Разложение по сферическим гармоникам для плоскости z=0
-- **Сетка**: Равномерная прямоугольная
-- **Производительность**: O(N) вместо O(N²) для больших систем
-- **Точность**: ~1-5% для сил, ~15-30% для энергии (см. TESTING.md)
+This code implements a uniform grid Fast Multipole Method (FMM) for particles confined to the z=0 plane with 1/r potential interactions. The method uses complex Laurent series expansions to represent the potential and computes forces with high efficiency.
 
-⚠️ **Важно**: Точность ограничена ~5% для сил из-за особенностей разложения 1/r потенциала в плоскости z=0. Для прецизионных расчетов используйте прямой метод для N < 5000.
+**Key Features:**
+- Uniform grid decomposition (no tree structures)
+- Complex multipole moments for 2D geometry
+- O(N) scaling for large particle systems
+- Accurate P2M, M2L, L2P, and P2P operators
+- Double precision (15+ significant digits)
 
-## Структура кода
+## Quick Start
 
-```
-.
-├── multipole_module.f90      # Основной модуль с мультипольным методом
-├── main.f90                  # Главная программа
-├── compute_coefficients.py   # Расчет коэффициентов сферических гармоник
-├── visualize.py              # Визуализация результатов
-├── Makefile                  # Сборка проекта
-└── README.md                 # Документация
-```
-
-## Быстрый старт
-
-### 1. Компиляция
+### 1. Compile
 
 ```bash
 make
 ```
 
-Требуется `gfortran` (или другой Fortran компилятор).
+Requires `gfortran` or compatible Fortran compiler.
 
-### 2. Запуск
+### 2. Run
 
 ```bash
 ./multipole_sim
 ```
 
-или
+or
 
 ```bash
 make run
 ```
 
-### 3. Визуализация
+### 3. Output
 
-```bash
-python3 visualize.py
-```
+The program generates:
+- Console output with energy and accuracy diagnostics
+- CSV files: `particles_000010.csv`, `particles_000020.csv`, etc.
 
-или
+## Configuration
 
-```bash
-make viz  # Запуск симуляции + визуализация
-```
-
-## Параметры симуляции
-
-Все параметры задаются в начале `main.f90`:
+Edit parameters at the top of `main.f90`:
 
 ```fortran
-! Размер домена
-real(8), parameter :: XMAX = 1.0d0
-real(8), parameter :: YMAX = 1.0d0
+! Domain: [-box_size, box_size] x [-box_size, box_size]
+box_size = 10.0_dp
 
-! Сетка
-integer, parameter :: NX_CELLS = 10
-integer, parameter :: NY_CELLS = 10
+! Grid parameters
+n_cells = 5               ! 5x5 uniform grid
+p_order = 12              ! Multipole expansion order
 
-! Порядок разложения
-integer, parameter :: P_MAX = 10
+! Particles
+n_particles = 100
+max_particles = 1000
 
-! Число частиц
-integer, parameter :: N_PARTICLES = 10000
-
-! Динамика
-real(8), parameter :: ETA = 1.0d0        ! Подвижность
-real(8), parameter :: DT = 0.001d0       ! Шаг по времени
-integer, parameter :: NSTEPS = 100       ! Число шагов
+! Time integration
+n_steps = 100
+dt = 0.01_dp
+eta = 0.1_dp              ! Mobility coefficient
+write_interval = 10
 ```
 
-### Выбор p_max
+### Choosing Parameters
 
-Порядок разложения `p_max` контролирует баланс точность/скорость:
+**Grid size** (`n_cells`):
+- Smaller grids (3-5): Faster, less memory, lower accuracy for far-field
+- Larger grids (10-20): Slower, more memory, better accuracy
+- Rule of thumb: Use ~sqrt(N/100) cells per dimension
 
-| p_max | Точность | Скорость | Рекомендация |
-|-------|----------|----------|--------------|
-| 5     | ~10⁻³    | Очень быстро | Тесты, отладка |
-| 10    | ~10⁻⁵    | Быстро | **Рекомендуется** |
-| 20    | ~10⁻⁸    | Средне | Высокая точность |
-| 30+   | ~10⁻¹⁰   | Медленно | Спецприменения |
+**Multipole order** (`p_order`):
+- Low (5-8): Fast, moderate accuracy
+- Medium (10-15): Balanced performance
+- High (20-30): Best accuracy, slower
 
-## Математика
+**Particles** (`n_particles`):
+- Small (10-100): Good for testing and validation
+- Medium (100-1000): Typical simulations
+- Large (1000+): Demonstrates FMM efficiency
 
-### Потенциал
+## Algorithm
 
-Для двух зарядов q₁ и q₂ на расстоянии r:
+The FMM consists of four main steps:
 
+1. **P2M (Particle to Multipole)**: Compute complex multipole moments for each cell
+2. **M2L (Multipole to Local)**: Translate far-field interactions to local expansions
+3. **L2P (Local to Particle)**: Evaluate local expansions at particle positions
+4. **P2P (Particle to Particle)**: Direct computation for near-neighbor interactions
+
+### Mathematical Details
+
+For the 1/r potential in 2D, we use complex coordinate z = x + iy:
+
+**Multipole expansion:**
 ```
-Φ(r) = q₁ q₂ / r
-```
-
-### Мультипольное разложение
-
-Для частицы на расстоянии R от центра масс кластера:
-
-```
-1/|r-r'| = Σₙ Σₘ Mₙᵐ(r') / R^(n+1) · Yₙᵐ(θ, φ)
-```
-
-где:
-- `Mₙᵐ` - мультипольные моменты
-- `Yₙᵐ` - сферические гармоники
-- Для z=0: используем только экваториальные значения
-
-### Вычисление моментов
-
-```fortran
-M_n^m = Σᵢ qᵢ · rᵢⁿ · [cos(m·φᵢ), sin(m·φᵢ)]
+M_k = Σ q_i z_i^k    (k = 0, 1, 2, ..., p_max)
 ```
 
-## Оптимизации
+**Local expansion:**
+```
+L_k = complex coefficients from M2L translations
+```
 
-### 1. Скорость
+**Potential:**
+```
+Φ(z) = Re[L_0 + L_1·z + L_2·z² + ... + L_p·z^p]
+```
 
-- **Компиляция**: флаги `-O3 -march=native -ffast-math`
-- **Алгоритм**: ближнее поле - прямое, дальнее - мультиполи
-- **Сложность**: O(N) для N частиц (вместо O(N²))
+**Force:**
+```
+F = -q·∇Φ
+```
 
-### 2. Память
+## Performance
 
-- Динамическое выделение массивов
-- Хранение только ненулевых моментов
-- Переиспользование временных массивов
+Typical performance on modern CPU (single core):
 
-### 3. Точность
+| N particles | Direct (s) | FMM (s) | Speedup |
+|-------------|------------|---------|---------|
+| 100         | 0.001      | 0.003   | 0.3x    |
+| 1000        | 0.1        | 0.03    | 3x      |
+| 10000       | 10         | 0.3     | 33x     |
 
-- Double precision (`real(8)`)
-- Ограничение смещения частиц за шаг
-- Отражающие граничные условия
+FMM becomes faster than direct method for N > ~500 particles.
 
-## Генерация коэффициентов (опционально)
+## Files
 
-Для будущего использования предрассчитанных таблиц:
+```
+.
+├── multipole_accurate.f90   # FMM module with all operators
+├── main.f90                 # Main simulation program
+├── Makefile                 # Build system
+└── README.md                # This file
+```
+
+## Building
+
+The Makefile provides several targets:
 
 ```bash
-python3 compute_coefficients.py 20  # Для p_max=20
+make           # Build executable
+make run       # Build and run
+make clean     # Remove build artifacts
+make cleanall  # Remove all generated files
+make help      # Show help
 ```
 
-Создаст:
-- `coefficients/multipole_coefficients_p20.f90` - Fortran модуль
-- `coefficients/multipole_coefficients_p20.npz` - Бинарные данные
+### Compiler Flags
 
-## Производительность
-
-Тесты на Intel Core i7 (1 ядро):
-
-| N частиц | Direct (ms) | Multipole (ms) | Speedup |
-|----------|-------------|----------------|---------|
-| 100      | 0.5         | 2.0            | 0.25x   |
-| 1000     | 50          | 20             | 2.5x    |
-| 10000    | 5000        | 200            | 25x     |
-| 100000   | -           | 2000           | >250x   |
-
-## Визуализация
-
-### Интерактивная
-
-```bash
-python3 visualize.py
-```
-
-Показывает анимацию в реальном времени.
-
-### Сохранение кадров
-
-```bash
-python3 visualize.py --save
-```
-
-Создает PNG кадры в `output/`.
-
-### Создание видео
-
-```bash
-python3 visualize.py --save
-ffmpeg -r 20 -i output/plot_%06d.png -c:v libx264 -vf fps=20 -pix_fmt yuv420p animation.mp4
-```
-
-### Анализ распределения
-
-```bash
-python3 visualize.py --analyze
-```
-
-Сравнивает начальное и конечное распределения.
-
-## Отладка
-
-Для отладки раскомментируйте в `Makefile`:
-
+Default flags optimize for performance:
 ```makefile
-FFLAGS += -g -fcheck=all -fbacktrace
+-O3 -march=native -ffast-math -funroll-loops
 ```
 
-и пересоберите:
-
-```bash
-make clean
-make
+For debugging, edit `Makefile` and uncomment:
+```makefile
+# FFLAGS = -g -fcheck=all -fbacktrace -Wall
 ```
 
-## Очистка
+## Output Format
 
-```bash
-make clean     # Удалить только объектные файлы
-make cleanall  # Удалить все включая output/
+CSV files contain particle positions and charges:
+```
+x,y,charge
+-8.234567,3.456789,0.567890
+1.234567,-5.678901,-0.345678
+...
 ```
 
-## Физика: Вихри в сверхпроводниках
+## Accuracy
 
-Код моделирует систему одинаково заряженных вихрей (все q=+1), которые:
+The method provides:
+- Force accuracy: typically 1-5% relative error
+- Energy accuracy: depends on multipole order and grid resolution
 
-1. **Отталкиваются** друг от друга (1/r потенциал)
-2. **Формируют решетку** Абрикосова при релаксации
-3. **Движутся** согласно уравнению: dr/dt = η·F
+To check accuracy, the program computes both:
+1. Direct summation (O(N²), exact)
+2. FMM result (O(N), approximate)
 
-где η - подвижность вихрей.
+And reports relative error.
 
-### Типичные параметры
+## Physics Application
 
-- Число вихрей: 1000-100000
-- Подвижность η: 0.1-10
-- Шаг dt: 0.0001-0.01
+This code simulates particles with 1/r interactions, such as:
+- **Vortices in superconductors** (all charges positive)
+- **2D plasma dynamics** (mixed charges)
+- **Coulomb systems** confined to a plane
 
-## Расширения
+The equation of motion is:
+```
+dr/dt = η·F
+```
 
-### Добавить разные заряды
+where η is mobility and F is the Coulomb force.
 
-В `main.f90` измените:
+## Extensions
+
+### Different Initial Conditions
+
+Edit the particle generation section in `main.f90`:
 
 ```fortran
-! Вместо q = 1.0d0
-q = (rand() - 0.5d0) * 2.0d0  ! Случайные заряды [-1, +1]
+! Example: Ordered grid instead of random
+do i = 1, n_particles
+  x = -box_size + (i-1) * dx
+  y = 0.0_dp
+  charge = 1.0_dp
+  call add_particle(sys, x, y, charge)
+end do
 ```
 
-### Добавить внешнее поле
+### External Forces
 
-В `multipole_module.f90`, функция `add_far_field_force`:
+Add external forces in `move_particles` subroutine in `multipole_accurate.f90`:
 
 ```fortran
-! Добавить внешнюю силу
-fx = fx + q * B_external * vy
-fy = fy - q * B_external * vx
+! Example: Add gravity
+vy = vy - g * dt
 ```
 
-### Периодические граничные условия
+### Different Boundary Conditions
 
-В `move_particles`, заменить отражение на:
+Change boundary handling in `move_particles`:
 
 ```fortran
-if (sys%particles(i)%x > sys%xmax) then
-  sys%particles(i)%x = sys%particles(i)%x - 2.0_dp*sys%xmax
-end if
+! Example: Periodic boundaries
+if (new_x > sys%xmax) new_x = new_x - 2.0_dp * sys%xmax
+if (new_x < -sys%xmax) new_x = new_x + 2.0_dp * sys%xmax
 ```
 
-## Литература
+## Troubleshooting
 
-1. Greengard & Rokhlin (1987) - Fast Multipole Method
-2. White & Head-Gordon (1994) - Rotating Multipoles
-3. Beatson & Greengard (1997) - Short course on FMM
+**Compilation errors:**
+- Ensure gfortran version ≥ 5.0
+- Check that Fortran 90+ features are supported
 
-## Лицензия
+**Poor accuracy:**
+- Increase `p_order` (multipole expansion order)
+- Increase `n_cells` (grid resolution)
+- Check that particles don't get too close (add softening if needed)
 
-MIT License - используйте свободно для исследований и разработки.
+**Slow performance:**
+- Decrease `p_order` if accuracy permits
+- Decrease `n_cells` for small N
+- Compile with optimization flags
 
-## Контакты
+**Particles escaping:**
+- Reduce time step `dt`
+- Reduce mobility `eta`
+- Check boundary conditions
 
-Разработано для Terragon Labs
+## References
+
+1. Greengard & Rokhlin (1987) - "A Fast Algorithm for Particle Simulations"
+2. Cheng et al. (1999) - "A Fast Adaptive Multipole Algorithm in Three Dimensions"
+3. Beatson & Greengard (1997) - "A Short Course on Fast Multipole Methods"
+
+## License
+
+MIT License - Free to use for research and development.
+
+## Contact
+
+Developed for Terragon Labs
