@@ -43,8 +43,8 @@ program main
   logical, parameter :: RUN_DYNAMICS = .true.    ! Run dynamics
   integer, parameter :: FRAME_SKIP = 5           ! Write every N frames
 
-  ! Output directory
-  character(len=256), parameter :: OUTPUT_DIR = 'output'
+  ! Output directory - will be created based on parameters
+  character(len=256) :: output_dir
 
   !============================================================================
   ! INITIALIZATION
@@ -138,10 +138,17 @@ program main
     print *, "======================================================================"
     print *, ""
 
-    call system('mkdir -p ' // trim(OUTPUT_DIR))
+    ! Create output directory with informative name
+    write(output_dir, '(A,I0,A,I0,A,I0,A,I0)') &
+      'output_N', N_PARTICLES, '_grid', NX_CELLS, '_p', P_MAX, '_steps', NSTEPS
+
+    ! Create directory (Fortran-compatible way)
+    call execute_command_line('mkdir ' // trim(output_dir), wait=.true.)
+    print *, "Output directory: ", trim(output_dir)
+    print *, ""
 
     ! Initial frame
-    call write_frame(sys, 0, OUTPUT_DIR)
+    call write_frame(sys, 0, output_dir)
 
     print *, "Running simulation..."
     do frame = 1, NSTEPS
@@ -165,9 +172,9 @@ program main
 
     print *, ""
     print *, "Simulation complete!"
-    print *, "Output written to: ", trim(OUTPUT_DIR)
+    print *, "Output written to: ", trim(output_dir)
     print *, ""
-    print *, "Visualize with: python3 visualize.py"
+    print *, "Visualize with: python3 visualize.py --dir ", trim(output_dir)
   end if
 
   !============================================================================
